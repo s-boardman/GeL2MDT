@@ -22,10 +22,15 @@ SOFTWARE.
 import os
 import json
 import hashlib
-import labkey as lk
-from datetime import datetime
-from django.utils.dateparse import parse_date
 import time
+from datetime import datetime
+
+from django.forms.models import model_to_dict
+from django.utils.dateparse import parse_date
+
+import labkey as lk
+
+from .db_lookups import SingleHash
 from ..models import *
 from ..api_utils.poll_api import PollAPI
 from ..vep_utils.run_vep_batch import CaseVariant, CaseTranscript
@@ -369,13 +374,13 @@ class CaseAttributeManager(object):
     Holds get/refresh functions to be called by MCA, as well as pointing to
     CaseModels and ManyCaseModels for access by MCA.bulk_create_new().
     """
-    def __init__(self, case, model_type, model_objects, many=False):
+    def __init__(self, case, model_type, hashmap, many=False):
         """
         Initialise with CaseModel or ManyCaseModel, dependent on many param.
         """
         self.case = case  # for accessing related table entries
         self.model_type = model_type
-        self.model_objects = model_objects
+        self.hashmap = hashmap
         self.many = many
         self.case_model = self.get_case_model()
 
@@ -496,7 +501,7 @@ class CaseAttributeManager(object):
             "email": "unknown",  # clinicain email not on labkey
             "hospital": clinician_details['hospital'],
             "added_by_user": False
-        }, self.model_objects)
+        }, self.hashmap)
         return clinician
 
     def get_paricipant_demographics(self, participant_id):
@@ -650,7 +655,7 @@ class CaseAttributeManager(object):
             "recruiting_disease": recruiting_disease,
             'disease_subtype': disease_subtype,
             "gmc": clinician.entry.hospital
-        }, self.model_objects)
+        }, self.hashmap)
         return proband
 
     def get_relatives(self):
@@ -686,7 +691,7 @@ class CaseAttributeManager(object):
             "surname": relative["surname"],
             "date_of_birth": datetime.strptime(relative["date_of_birth"], "%Y/%m/%d").date(),
             "sex": relative["sex"],
-        } for relative in relative_list], self.model_objects)
+        } for relative in relative_list], self.hashmap)
 
         return relatives
 
@@ -773,7 +778,7 @@ class CaseAttributeManager(object):
             "gel_family_id": family_id,
             "trio_sequenced": self.case.trio_sequenced,
             "has_de_novo": self.case.has_de_novo
-        }, self.model_objects)
+        }, self.hashmap)
         return family
 
     def get_phenotypes(self):
@@ -786,9 +791,9 @@ class CaseAttributeManager(object):
                  "description": "unknown"}
                 for phenotype in self.case.proband["hpoTermList"]
                 if phenotype["termPresence"] is True
-            ], self.model_objects)
+            ], self.hashmap)
         else:
-            phenotypes = ManyCaseModel(Phenotype, [], self.model_objects)
+            phenotypes = ManyCaseModel(Phenotype, [], self.hashmap)
         return phenotypes
 
     def get_family_phenotyes(self):
@@ -796,7 +801,7 @@ class CaseAttributeManager(object):
         family_phenotypes = ManyCaseModel(FamilyPhenotype, [
             {"family": None,
              "phenotype": None}
-        ], self.model_objects)
+        ], self.hashmap)
 
         return family_phenotypes
 
@@ -858,9 +863,9 @@ class CaseAttributeManager(object):
                 "panel_name": panel["panel_name_results"]["SpecificDiseaseName"],
                 "disease_group": panel["panel_name_results"]["DiseaseGroup"],
                 "disease_subgroup": panel["panel_name_results"]["DiseaseSubGroup"]
-            } for panel in self.case.panels], self.model_objects)
+            } for panel in self.case.panels], self.hashmap)
         else:
-            panels = ManyCaseModel(Panel, [], self.model_objects)
+            panels = ManyCaseModel(Panel, [], self.hashmap)
 
         return panels
 
@@ -885,9 +890,9 @@ class CaseAttributeManager(object):
                 # create the MCM
                 "version_number": panel["panelapp_results"]["version"],
                 "panel": panel["model"]
-            } for panel in self.case.panels], self.model_objects)
+            } for panel in self.case.panels], self.hashmap)
         else:
-            panel_versions = ManyCaseModel(PanelVersion, [], self.model_objects)
+            panel_versions = ManyCaseModel(PanelVersion, [], self.hashmap)
         return panel_versions
 
     def get_genes(self):
@@ -958,7 +963,7 @@ class CaseAttributeManager(object):
             "ensembl_id": gene["EnsembleGeneIds"],  # TODO: which ID to use?
             "hgnc_name": gene["GeneSymbol"],
             "hgnc_id": gene['HGNC_ID']
-        } for gene in cleaned_gene_list if gene["HGNC_ID"]], self.model_objects)
+        } for gene in cleaned_gene_list if gene["HGNC_ID"]], self.hashmap)
         return genes
 
     def get_panel_version_genes(self):
@@ -966,7 +971,7 @@ class CaseAttributeManager(object):
         panel_version_genes = ManyCaseModel(PanelVersionGenes, [{
             "panel_version": None,
             "gene": None
-        }], self.model_objects)
+        }], self.hashmap)
 
         return panel_version_genes
 
@@ -1007,7 +1012,7 @@ class CaseAttributeManager(object):
             "strand": transcript.transcript_strand,
             'genome_assembly': genome_assembly
             # add all transcripts except those without associated genes
-        } for transcript in case_transcripts if transcript.gene_model], self.model_objects)
+        } for transcript in case_transcripts if transcript.gene_model], self.hashmap)
 
         return transcripts
 
@@ -1022,7 +1027,7 @@ class CaseAttributeManager(object):
             "cip": self.case.json["cip"],
             "ir_family_id": self.case.request_id,
             "priority": self.case.json["case_priority"]
-        }, self.model_objects)
+        }, self.hashmap)
         return ir_family
 
     def get_ir_family_panel(self):
@@ -1068,7 +1073,7 @@ class CaseAttributeManager(object):
             "proportion_above_15x": proportion_above_15x,
             "genes_failing_coverage": str_genes_failing_coverage
         } for panel in self.case.attribute_managers[PanelVersion].case_model.case_models if "entry" in vars(panel)],
-            self.model_objects)
+            self.hashmap)
 
         return ir_family_panels
 
@@ -1118,7 +1123,7 @@ class CaseAttributeManager(object):
             "sample_id": self.case.proband_sample,
             'tumour_content': tumour_content,
             "case_status": 'N',  # initialised to not started? (N)
-        }, self.model_objects)
+        }, self.hashmap)
         return ir
 
     def get_variants(self):
@@ -1208,7 +1213,7 @@ class CaseAttributeManager(object):
             "db_snp_id": variant["db_snp_id"],
             "reference": variant["reference"],
             "position": variant["position"],
-        } for variant in cleaned_variant_list], self.model_objects)
+        } for variant in cleaned_variant_list], self.hashmap)
 
         return variants
 
@@ -1287,7 +1292,7 @@ class CaseAttributeManager(object):
             "sift": transcript.variant_sift,
             "polyphen": transcript.variant_polyphen,
         } for transcript in self.case.transcripts
-            if transcript.transcript_entry], self.model_objects)
+            if transcript.transcript_entry], self.hashmap)
 
         return transcript_variants
 
@@ -1461,7 +1466,7 @@ class CaseAttributeManager(object):
             "paternal_zygosity": variant["paternal_zygosity"],
             "inheritance": self.determine_variant_inheritance(variant),
             "somatic": variant["somatic"]
-        } for variant in tiered_and_cip_proband_variants], self.model_objects)
+        } for variant in tiered_and_cip_proband_variants], self.hashmap)
 
         return proband_variants
 
@@ -1703,7 +1708,7 @@ class CaseAttributeManager(object):
                             "tier": report_event_tier
                         })
 
-        report_events = ManyCaseModel(ReportEvent, json_report_events, self.model_objects)
+        report_events = ManyCaseModel(ReportEvent, json_report_events, self.hashmap)
         return report_events
 
     def get_proband_transcript_variants(self):
@@ -1741,7 +1746,7 @@ class CaseAttributeManager(object):
         } for transcript
             in self.case.transcripts
             if transcript.transcript_entry
-            and transcript.proband_variant_entry], self.model_objects)
+            and transcript.proband_variant_entry], self.hashmap)
 
         return proband_transcript_variants
 
@@ -1752,7 +1757,7 @@ class CaseAttributeManager(object):
         tools_and_assemblies = ManyCaseModel(ToolOrAssemblyVersion, [{
             "tool_name": tool,
             "version_number": version
-        }for tool, version in self.case.tools_and_versions.items()], self.model_objects)
+        }for tool, version in self.case.tools_and_versions.items()], self.hashmap)
 
         return tools_and_assemblies
 
@@ -1763,100 +1768,24 @@ class CaseModel(object):
     instance of a model (pre-creation or post-creation) and whether it
     requires creation in the database.
     """
-    def __init__(self, model_type, model_attributes, model_objects):
+    def __init__(self, model_type, model_attributes, hashmap):
         self.model_type = model_type
         self.model_attributes = model_attributes
-        self.model_objects = model_objects
-        self.entry = self.check_found_in_db(self.model_objects)
+        self.hashmap = hashmap
+        self.entry = self.check_found_in_db(self.hashmap)
 
-    def check_found_in_db(self, queryset):
+    def check_found_in_db(self, hashmap):
         """
-        Queries the database for a model of the given type with the given
-        attributes. Returns True if found, False if not.
+        Creates a hash from the lookup fields, then checks if the hash is
+        present in the hashmap of all current models. If it is, then the model
+        is fetched from the hashmap and set as the value for self.entry. If it
+        is not, the value for self.entry is set to False.
         """
+        hashmap_dict = hashmap.get_hashmap()
+        hash_manager = SingleHash(self.model_type, self.model_attributes)
+        attribute_hash = hash_manager.get_hash()
 
-        if self.model_type == Clinician:
-            entry = [db_obj for db_obj in queryset
-                     if db_obj.name == self.model_attributes["name"]
-                     and db_obj.hospital == self.model_attributes["hospital"]
-                     and db_obj.email == self.model_attributes["email"]]
-        elif self.model_type == Proband:
-            entry = [db_obj for db_obj in queryset
-                     if db_obj.gel_id == str(self.model_attributes["gel_id"])]
-        elif self.model_type == Family:
-            entry = [db_obj for db_obj in queryset
-                     if db_obj.gel_family_id == str(self.model_attributes["gel_family_id"])]
-        elif self.model_type == Relative:
-            entry = [db_obj for db_obj in queryset
-                     if str(db_obj.gel_id) == str(self.model_attributes["gel_id"])
-                     and db_obj.proband == self.model_attributes['proband']]
-        elif self.model_type == Phenotype:
-            entry = [db_obj for db_obj in queryset
-                     if db_obj.hpo_terms == self.model_attributes["hpo_terms"]]
-        elif self.model_type == InterpretationReportFamily:
-            entry =[db_obj for db_obj in queryset
-                    if db_obj.ir_family_id == self.model_attributes["ir_family_id"]]
-        elif self.model_type == Panel:
-            entry = [db_obj for db_obj in queryset
-                     if db_obj.panelapp_id == self.model_attributes["panelapp_id"]]
-        elif self.model_type == PanelVersion:
-            entry = [db_obj for db_obj in queryset
-                     if db_obj.panel == self.model_attributes["panel"]
-                     and db_obj.version_number == self.model_attributes["version_number"]]
-        elif self.model_type == InterpretationReportFamilyPanel:
-            entry = [db_obj for db_obj in queryset
-                     if db_obj.ir_family == self.model_attributes["ir_family"]
-                     and db_obj.panel == self.model_attributes["panel"]]
-        elif self.model_type == Gene:
-            entry = [db_obj for db_obj in queryset
-                     if db_obj.hgnc_id == self.model_attributes["hgnc_id"]]
-        elif self.model_type == Transcript:
-            entry = [db_obj for db_obj in queryset
-                     if db_obj.name == self.model_attributes["name"]
-                     and db_obj.genome_assembly == self.model_attributes['genome_assembly']]
-        elif self.model_type == GELInterpretationReport:
-            entry = [db_obj for db_obj in queryset
-                     if db_obj.sha_hash == self.model_attributes["sha_hash"]]
-        elif self.model_type == Variant:
-            entry = [db_obj for db_obj in queryset
-                     if db_obj.chromosome == self.model_attributes["chromosome"]
-                     and db_obj.position == self.model_attributes["position"]
-                     and db_obj.reference == self.model_attributes["reference"]
-                     and db_obj.alternate == self.model_attributes["alternate"]
-                     and db_obj.genome_assembly == self.model_attributes["genome_assembly"]]
-        elif self.model_type == TranscriptVariant:
-            entry = [db_obj for db_obj in queryset
-                     if db_obj.transcript == self.model_attributes["transcript"]
-                     and db_obj.variant == self.model_attributes["variant"]]
-        elif self.model_type == ProbandVariant:
-            entry = [db_obj for db_obj in queryset
-                     if db_obj.variant == self.model_attributes["variant"]
-                     and db_obj.max_tier == self.model_attributes["max_tier"]
-                     and db_obj.interpretation_report == self.model_attributes["interpretation_report"]]
-        elif self.model_type == ProbandTranscriptVariant:
-            entry = [db_obj for db_obj in queryset
-                     if db_obj.transcript == self.model_attributes["transcript"]
-                     and db_obj.proband_variant == self.model_attributes["proband_variant"]]
-        elif self.model_type == ReportEvent:
-            entry = [db_obj for db_obj in queryset
-                     if db_obj.re_id == self.model_attributes["re_id"]
-                     and db_obj.proband_variant == self.model_attributes["proband_variant"]]
-        elif self.model_type == ToolOrAssemblyVersion:
-            entry = [db_obj for db_obj in queryset
-                     if db_obj.tool_name == self.model_attributes["tool_name"]
-                     and db_obj.version_number == self.model_attributes["version_number"]]
-
-        if len(entry) == 1:
-            entry = entry[0]
-            # also need to set self.entry here as it may not be called in init
-            self.entry = entry
-        elif len(entry) == 0:
-            entry = False
-            self.entry = entry
-        else:
-            print(entry)
-            raise ValueError("Multiple entries found for same object.")
-
+        entry = hashmap_dict.get(attribute_hash, None)
         return entry
 
 
@@ -1866,13 +1795,13 @@ class ManyCaseModel(object):
     for ManyToMany field population, as the bulk update must be handled using
     'through' tables.
     """
-    def __init__(self, model_type, model_attributes_list, model_objects):
+    def __init__(self, model_type, model_attributes_list, hashmap):
         self.model_type = model_type
         self.model_attributes_list = model_attributes_list
-        self.model_objects = model_objects
+        self.hashmap = hashmap
 
         self.case_models = [
-            CaseModel(model_type, model_attributes, model_objects)
+            CaseModel(model_type, model_attributes, hashmap)
             for model_attributes in model_attributes_list
         ]
         self.entries = self.get_entry_list()

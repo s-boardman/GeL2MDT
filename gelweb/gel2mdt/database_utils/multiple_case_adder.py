@@ -21,13 +21,17 @@ SOFTWARE.
 """
 import os
 import traceback
+import hashlib
 import json
+
+from django.forms.models import model_to_dict
 
 from ..models import *
 from ..api_utils.poll_api import PollAPI
 from ..api_utils.cip_utils import InterpretationList
 from ..vep_utils.run_vep_batch import generate_transcripts
 from .case_handler import Case, CaseAttributeManager
+from .db_lookups import HashMap
 from ..config import load_config
 import pprint
 import logging
@@ -330,11 +334,12 @@ class MultipleCaseAdder(object):
                 model_objects = model_type.objects.all().prefetch_related(*lookups)
             elif not lookups:
                 model_objects = model_type.objects.all()
+            model_hashmap = HashMap(model_type, model_objects)
 
             for case in cases:
                 # create a CaseAttributeManager for the case
                 case.attribute_managers[model_type] = CaseAttributeManager(
-                    case, model_type, model_objects)
+                    case, model_type, model_hashmap)
                 # use thea attribute manager to set the case models
                 attribute_manager = case.attribute_managers[model_type]
                 attribute_manager.get_case_model()
@@ -367,9 +372,10 @@ class MultipleCaseAdder(object):
             elif not lookups:
                 model_objects = model_type.objects.all()
 
+
             for model in model_list:
                 if model.entry is False:
-                    model.check_found_in_db(model_objects)
+                    model.check_found_in_db(model_hashmap)
 
 
         # finally, save jsons to disk storage
@@ -447,6 +453,7 @@ class MultipleCaseAdder(object):
 
         When adding new tables to the database, add their FKs here.
         """
+
         lookup_dict = {
             Clinician: None,
             Phenotype: None,
@@ -469,6 +476,7 @@ class MultipleCaseAdder(object):
             ProbandTranscriptVariant: ["transcript", "proband_variant"],
             ReportEvent: ["proband_variant", "panel", "gene"],
         }
+
         return lookup_dict[model_type]
 
     def update_cases(self):
