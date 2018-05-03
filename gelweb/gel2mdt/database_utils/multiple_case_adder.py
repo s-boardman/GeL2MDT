@@ -31,7 +31,7 @@ from ..api_utils.poll_api import PollAPI
 from ..api_utils.cip_utils import InterpretationList
 from ..vep_utils.run_vep_batch import generate_transcripts
 from .case_handler import Case, CaseAttributeManager
-from .db_lookups import HashMap
+from .db_lookups import HashmapManager
 from ..config import load_config
 import pprint
 import logging
@@ -329,12 +329,7 @@ class MultipleCaseAdder(object):
         for model_type, many in update_order:
 
             # prefetch database entries for check_found_in_db()
-            lookups = self.get_prefetch_lookups(model_type)
-            if lookups:
-                model_objects = model_type.objects.all().prefetch_related(*lookups)
-            elif not lookups:
-                model_objects = model_type.objects.all()
-            model_hashmap = HashMap(model_type, model_objects)
+            model_hashmap = HashmapManager(model_type)
 
             for case in cases:
                 # create a CaseAttributeManager for the case
@@ -365,16 +360,10 @@ class MultipleCaseAdder(object):
                 print("attempting to bulk create", model_type)
                 self.bulk_create_new(model_type, model_list)
 
-            # refresh CaseAttributeManagers with new CaseModels
-            lookups = self.get_prefetch_lookups(model_type)
-            if lookups:
-                model_objects = model_type.objects.all().prefetch_related(*lookups)
-            elif not lookups:
-                model_objects = model_type.objects.all()
-
-
             for model in model_list:
-                if model.entry is False:
+                # CaseModel will need to be updated for new entries
+                if not model.entry:
+                    print("No entry for", model.model_attributes, "post-creation. Setting now...")
                     model.check_found_in_db(model_hashmap)
 
 
@@ -402,7 +391,7 @@ class MultipleCaseAdder(object):
         new_attributes = [
             case_model.model_attributes
             for case_model in model_list
-            if case_model.entry is False]
+            if not case_model.entry]
         # use sets and tuples to remove duplicate dictionaries
         new_attributes = [
             dict(attribute_tuple)
@@ -430,7 +419,7 @@ class MultipleCaseAdder(object):
         new_attributes = [
             case_model.model_attributes
             for case_model in model_list
-            if case_model.entry is False]
+            if not case_model.entry]
         # use sets and tuples to remove duplicate dictionaries
         new_attributes = [
             dict(attribute_tuple)
@@ -445,39 +434,6 @@ class MultipleCaseAdder(object):
             model_type(**attributes)
             for attributes in new_attributes])
 
-    def get_prefetch_lookups(self, model_type):
-        """
-        Takes a model type and returns list of the ForeignKey fields which
-        need to be passed to prefetch_related() when creating a QuerySet to
-        quickly get related items.
-
-        When adding new tables to the database, add their FKs here.
-        """
-
-        lookup_dict = {
-            Clinician: None,
-            Phenotype: None,
-            Family: ["clinician"],
-            FamilyPhenotype: ["family", "phenotype"],
-            Gene: None,
-            Panel: None,
-            PanelVersion: ["panel"],
-            PanelVersionGene: ["panel_version", "gene"],
-            ToolOrAssemblyVersion: None,
-            InterpretationReportFamily: ["participant_family"],
-            InterpretationReportFamilyPanel: ["ir_family", "panel"],
-            GELInterpretationReport: ["ir_family"],
-            Proband: ["family"],
-            Relative: ["proband"],
-            Variant: ["genome_assembly"],
-            Transcript: ["gene", 'genome_assembly'],
-            TranscriptVariant: ["transcript", "variant"],
-            ProbandVariant: ["variant", "interpretation_report"],
-            ProbandTranscriptVariant: ["transcript", "proband_variant"],
-            ReportEvent: ["proband_variant", "panel", "gene"],
-        }
-
-        return lookup_dict[model_type]
 
     def update_cases(self):
         """

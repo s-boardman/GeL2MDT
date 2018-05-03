@@ -1786,6 +1786,12 @@ class CaseModel(object):
         attribute_hash = hash_manager.get_hash()
 
         entry = hashmap_dict.get(attribute_hash, None)
+        if entry:
+            print("Found", entry, "in hashmap.")
+        else:
+        # reset entry
+            self.entry = entry
+
         return entry
 
 

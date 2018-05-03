@@ -67,19 +67,73 @@ class LookupManager(object):
         hash_digest = hash_hex.hexdigest()
         return hash_digest
 
+    def get_all_database_entries(self, model_type):
+        lookups = self.get_prefetch_lookups(model_type)
+        if lookups:
+            model_objects = model_type.objects.all().prefetch_related(*lookups)
+        elif not lookups:
+            model_objects = model_type.objects.all()
 
-class HashMap(LookupManager):
+        return model_objects
+
+    def get_prefetch_lookups(self, model_type):
+        """
+        Takes a model type and returns list of the ForeignKey fields which
+        need to be passed to prefetch_related() when creating a QuerySet to
+        quickly get related items.
+        When adding new tables to the database, add their FKs here.
+        """
+        lookup_dict = {
+            Clinician: None,
+            Phenotype: None,
+            Family: ["clinician"],
+            FamilyPhenotype: ["family", "phenotype"],
+            Gene: None,
+            Panel: None,
+            PanelVersion: ["panel"],
+            PanelVersionGene: ["panel_version", "gene"],
+            ToolOrAssemblyVersion: None,
+            InterpretationReportFamily: ["participant_family"],
+            InterpretationReportFamilyPanel: ["ir_family", "panel"],
+            GELInterpretationReport: ["ir_family"],
+            Proband: ["family"],
+            Relative: ["proband"],
+            Variant: ["genome_assembly"],
+            Transcript: ["gene", 'genome_assembly'],
+            TranscriptVariant: ["transcript", "variant"],
+            ProbandVariant: ["variant", "interpretation_report"],
+            ProbandTranscriptVariant: ["transcript", "proband_variant"],
+            ReportEvent: ["proband_variant", "panel", "gene"],
+        }
+        return lookup_dict[model_type]
+
+class HashmapManager(LookupManager):
     """
     Creates a hashmap of all of the model values currently present in the
     database, based on the fields defined in self.fields_to_hash. This can be
     leveraged to fetch items out of the database with 1 query and no iteration
     through a list.
     """
-    def __init__(self, model_type, model_object_list):
+    def __init__(self, model_type):
         self.model_type = model_type
-        self.model_object_list = model_object_list
 
         super().__init__()
+
+    def initialise_hashmap_files(self):
+        """
+        Initialise hashmap files as defined in the config.
+        """
+        filename = str(model_type).split("'")[1].split(".")[2] + "_hashmap.txt"
+        output = open(os.path.join(self.config_dict['hashmap_file_directory'], filename), 'w')
+        for key in self.searched_genes:
+            output.write(f'{key}\t{self.searched_genes[key]}\n')
+        output.close()
+
+    def refresh_hashmap_files(self):
+        """
+        Add entries to hashmaps which are not already present.
+        """
+        pass
 
     def get_hashmap(self):
         """
@@ -89,7 +143,10 @@ class HashMap(LookupManager):
         hashmap = {}
 
         fields = self.fields_to_hash[self.model_type]
-        model_object_values = list(self.model_object_list.values(*fields))
+        # calling get_all_database_entries here allows for refreshed hashmap
+        # each time
+        model_object_list = self.get_all_database_entries(self.model_type)
+        model_object_values = list(model_object_list.values(*fields))
 
         # convert all attributes to a string repr, to allow json serialisation
         # of django model types
@@ -103,7 +160,7 @@ class HashMap(LookupManager):
         # actual values
         hash_tuple_list = [(self.get_dict_hash(values), values)
                            for values in model_object_values]
-        for hash_tuple, model in zip(hash_tuple_list, self.model_object_list):
+        for hash_tuple, model in zip(hash_tuple_list, model_object_list):
             model_fields = model_to_dict(model, fields=fields)
             for field in fields:
                 if hash_tuple[1][field] != str(model_fields[field]):
@@ -114,12 +171,12 @@ class HashMap(LookupManager):
                         )
                     )
 
+            print(hashmap)
             if not hashmap.get(hash_tuple[0], None):
                 # mapping not yet made, add the hash mapping
                 hashmap[hash_tuple[0]] = model
             else:
                 # Multiple objects with same attributes, BARF
-                print(hashmap[hash_tuple[0]])
                 raise ValueError("Multiple entries found for same object.")
 
         return hashmap
@@ -150,10 +207,8 @@ class SingleHash(LookupManager):
             field: str(self.model_attributes[field])
             for field in fields
         }
-        print(attribute_dict)
 
         values_hash = self.get_dict_hash(attribute_dict)
-        print(values_hash)
 
         return values_hash
 
